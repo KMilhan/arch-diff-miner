@@ -20,65 +20,90 @@ ADL Diff Miner는 Git 저장소의 커밋 히스토리를 스캔하여, 아키�
 이 도구는 Python의 Typer 모듈을 기반으로 다음 CLI 인자를 받아야 합니다.
  
 \--repo "/path/to/repo" \\  
-\--adl-file "\[*.]adl.yaml" \\  
+\--adl-file "adl.yaml" \\  
 \--code-exts .py .yaml .json \\  
 \--output "training\_dataset.jsonl"
 
 * \--repo (필수): 분석할 로컬 Git 저장소의 경로.
-* \--adl-file (필수): 저장소 내에서 추적할 ADL 파일의 상대 경로.
+* \--adl-file (선택, 기본값: `adl.yaml`): 저장소 내에서 추적할 ADL 파일의 상대 경로.
 * \--code-exts (선택, 기본값: .py): ADL 변경과 연관시킬 소스 코드 파일의 확장자 목록 (공백으로 구분).
 * \--output (선택, 기본값: stdout): 결과를 저장할 출력 파일 경로. 지정하지 않으면 표준 출력(stdout)으로 jsonl 데이터를 스트리밍합니다.
 
+> 현재 구현은 ADL 경로를 **정확 일치 + 대소문자 무시** 방식으로만 비교합니다. 향후 glob-style 패턴 지원은 로드맵에 있지만 아직 CLI에서는 단일 경로 문자열만 정상 동작합니다.
+
 ## **4\. 출력 데이터 스키마 (JSONL)**
 
-도구는 \--output으로 지정된 파일 또는 stdout에 **Line-Delimited JSON (.jsonl)** 형식으로 훈련 데이터를 출력해야 합니다. 각 라인은 다음 스키마를 따르는 하나의 JSON
-객체입니다.
+도구는 \--output으로 지정된 파일 또는 stdout에 **Line-Delimited JSON (.jsonl)** 형식으로 UTF-8 레코드를 스트리밍해야 합니다. 각 레코드는 아래 필드를 포함합니다.
 
-이 스키마는 프로토타입의 DiffDataPair 튜플을 확장하여, 추적 및 분석에 필요한 메타데이터를 포함합니다.
+| 블록 | 필드 | 타입 | 설명 |
+| --- | --- | --- | --- |
+| `commit` | `hash` | str | 대상 커밋 SHA. |
+|  | `parent_hash` | str | 첫 번째 부모 SHA. |
+|  | `authored_at` / `committed_at` | str (ISO-8601 UTC) | 작성/커밋 타임스탬프. |
+|  | `author` / `committer` | obj | `{ "name": str, "email": str }`. committer가 없는 경우 author 정보 재사용 가능. |
+|  | `is_merge` | bool | 부모가 둘 이상이면 `true`. |
+| `intent` | `message` | str | 커밋 메시지 전문. |
+|  | `source` | obj | `{ "type": "commit_message" }` (추후 PR/이슈 연동 확장). |
+| `adl_diff` | `path` | str | 최신 커밋에서의 ADL 경로. |
+|  | `previous_path` | str? | 리네임 발생 시 이전 경로. |
+|  | `status` | str | `added`/`modified`/`deleted`/`renamed`. |
+|  | `hunks` | list[obj] | 각 요소는 `{ "header", "added", "removed", "context" }`. 최소 1개 이상 존재해야 함. |
+|  | `stats` | obj | `{ "additions": int, "deletions": int }`. |
+| `code_diffs` | list[obj] |  | 허용한 확장자(.py 등)만 포함. 각 요소는 `{ "path", "status", "extension", "language", "hunks", "stats" }`. |
+| `metadata` | `dataset_version` | str | 예: `"adl-diff-miner-schema-2025-01"`. |
+|  | `generated_at` | str (ISO-8601 UTC) | 레코드 생성 시각. |
 
-{  
-"target\_commit\_hash": "a1b2c3d4...",  
-"parent\_commit\_hash": "e5f6g7h8...",  
-"intent\_data": {  
-"message": "ADL: Add Loki logging stack (V-3.1)\\n\\n- Adds dep-promtail and dep-loki to V-3.1\\n- Links to ADR-3
-rationale.",  
-"author\_name": "KMilhan",  
-"author\_email": "milhan@example.com",  
-"timestamp\_utc": "2025-11-12T08:30:00Z"  
-},  
-"code\_diffs": \[  
-{  
-"file\_path": "spam\_bootstrapper/logging/config.py",  
-"diff\_text": "--- a/spam\_bootstrapper/logging/config.py\\n+++ b/spam\_bootstrapper/logging/config.py\\n@@ \-1,5 \+1,8
-@@\\n import logging\\n
-\\n+LOKI\_URL \= '\[http://loki.default.svc.cluster.local:3100\](http://loki.default.svc.cluster.local:3100)'\\n+\\n def
-get\_logger():\\n \# ... (code changes) ..."  
-},  
-{  
-"file\_path": "spam\_bootstrapper/deploy/k8s/loki.yaml",  
-"diff\_text": "--- /dev/null\\n+++ b/spam\_bootstrapper/deploy/k8s/loki.yaml\\n@@ \-0,0 \+1,50 @@\\n+apiVersion:
-v1\\n+kind: StatefulSet\\n+metadata:\\n+ name: loki\\n\# ... (new file content) ..."  
-}  
-\],  
-"adl\_diff": {  
-"file\_path": "spam-filter-adl.yaml",  
-"diff\_text": "--- a/spam-filter-adl.yaml\\n+++ b/spam-filter-adl.yaml\\n@@ \-215,6 \+215,18 @@\\n name: \\"Model
-registry\\"\\n description: \\"Storage server managing model's status and artifact\\"\\n+ \- id: dep-promtail\\n+
-name: \\"Promtail DaemonSet\\"\\n+ description: \\"DaemonSet shipping spam-filter pod logs with redaction filters\\"
-\\n+ \- id: dep-loki\\n+ name: \\"Loki StatefulSet\\"\\n+ description: \\"Single-replica Loki storing structured logs \+
-exposing query API\\"\\n+ \- id: dep-grafana-loki\\n+ name: \\"Grafana Loki Datasource\\"\\n+ description: \\"Grafana
-datasource pointing at Loki for SRE dashboards\\"\\n connections:\\n \- source: dep-api-gateway\\n target:
-dep-inference-service\\n@@ \-223,6 \+235,15 @@\\n \- source: dep-inference-service\\n target: dep-model-registry\\n
-purpose: \\"Query the latest stable version of model\\"\\n+ \- source: dep-inference-service\\n+ target:
-dep-promtail\\n+ purpose: \\"Pods emit structured JSON logs scraped by Promtail\\"\\n+ \- source: dep-promtail\\n+
-target: dep-loki\\n+ purpose: \\"Promtail pushes logs with request/trace IDs to Loki\\"\\n+ \- source: dep-loki\\n+
-target: dep-grafana-loki\\n+ purpose: \\"Grafana queries Loki for troubleshooting and SLO dashboards\\""  
-}  
+예시 (요약):
+
+```json
+{
+  "commit": {
+    "hash": "0bff65a6fb3b0b7bfbc6f5cb9f947f1f22dc5678",
+    "parent_hash": "9a2b3a4c5d6e7f8091a2b3c4d5e6f708192a3b4c",
+    "authored_at": "2025-11-12T07:58:10Z",
+    "committed_at": "2025-11-12T08:03:41Z",
+    "author": {"name": "KMilhan", "email": "milhan@example.com"},
+    "committer": {"name": "KMilhan", "email": "milhan@example.com"},
+    "is_merge": false
+  },
+  "intent": {
+    "message": "ADL: add Loki logging stack",
+    "source": {"type": "commit_message"}
+  },
+  "adl_diff": {
+    "path": "architectures/decisions.yaml",
+    "previous_path": "adl.yaml",
+    "status": "renamed",
+    "hunks": [
+      {
+        "header": "@@ -10,3 +10,8 @@",
+        "added": ["+  - id: dep-loki", "+    description: Loki log store"],
+        "removed": ["-  - id: dep-syslog"],
+        "context": ["   title: Observability"]
+      }
+    ],
+    "stats": {"additions": 2, "deletions": 1}
+  },
+  "code_diffs": [
+    {
+      "path": "svc/logging/config.py",
+      "status": "modified",
+      "extension": ".py",
+      "language": null,
+      "hunks": ["@@ -1,3 +1,6 @@", " import logging", "+LOKI_URL = 'http://loki:3100'"] ,
+      "stats": {"additions": 2, "deletions": 0}
+    }
+  ],
+  "metadata": {
+    "dataset_version": "adl-diff-miner-schema-2025-01",
+    "generated_at": "2025-11-12T08:04:05Z"
+  }
 }
+```
 
 ## **5\. 핵심 로직 및 엣지 케이스 처리**
 
-1. **커밋 순회:** 프로토타입과 동일하게 repo.iter\_commits(paths=adl\_file)를 사용하여 adl-file을 변경한 커밋(target\_commit)만 효율적으로 순회합니다.
+1. **커밋 순회:** 구현체는 `repo.walk(head_id, pygit2.GIT_SORT_TOPOLOGICAL)`로 전체 히스토리를 순회한 뒤, 각 커밋 diff에서 ADL 파일과 코드 확장자를 **사후 필터링**합니다. (향후 최적화로 `repo.iter_commits(paths=adl_file)` 같은 사전 필터링을 도입할 수 있습니다.)
 2. **루트 커밋 (Root Commit):** target\_commit.parents가 비어있는 경우(루트 커밋), diff 대상이 없으므로 해당 커밋을 건너뛰고(skip) 정보 로그를 남깁니다.
 3. **머지 커밋 (Merge Commits):** len(target\_commit.parents) \> 1인 경우, v1.0의 정책은 다음과 같습니다.
     * **'첫 번째 부모'**(target\_commit.parents\[0\])를 '직전 커밋'(parent\_commit)으로 간주하고 diff를 생성합니다. 이는 git pull이나 git merge의
