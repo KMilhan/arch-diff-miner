@@ -1,8 +1,9 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
+- `arch_diff_miner/` – Typer CLI package housing the miner logic (`cli.py`, `__init__.py`, `__main__.py`).
 - `main.py` – lightweight entry point used for smoke-testing interpreter wiring.
-- `mine_adl_diffs.py` – core miner that walks a target repo, gathers `(intent, code_diffs, adl_diff)` tuples, and persists them to `training_dataset.json`.
+- `mine_adl_diffs.py` – compatibility wrapper that simply dispatches into the package CLI.
 - `training_dataset.json` – generated output; keep large snapshots out of git or prune before committing.
 - `pyproject.toml` / `uv.lock` – Python 3.14 project definition and locked dependencies (currently `pygit2`, `typer`, and transitive helpers).
 Keep helper scripts beside the miner so paths stay relative; place any future tests in `tests/` mirroring module names (`tests/test_mine_adl_diffs.py`).
@@ -17,8 +18,8 @@ Keep helper scripts beside the miner so paths stay relative; place any future te
 - Run everything through `uv` to stay on the locked Python 3.14 freethreaded (no-GIL) toolchain; skip ad-hoc `pip` or system `python` invocations, and install the interpreter with `uv python install 3.14+freethreaded` when needed.
 - `uv sync` – installs the locked environment; prefer this over bare `pip` so everyone targets Python 3.14.
 - `uv run python main.py` – ensures the entry point and logging stack still execute after edits.
-- `uv run python mine_adl_diffs.py` – mines diffs using the `REPO_PATH` pointing at your local ADL source repo and refreshes `training_dataset.json`.
-- `uv run python mine_adl_diffs.py --help` – inspect the Typer CLI and available options.
+- `uv run python -m arch_diff_miner mine` – mines diffs using the `REPO_PATH` pointing at your local ADL source repo and refreshes `training_dataset.json`.
+- `uv run python -m arch_diff_miner --help` – inspect the Typer CLI and available options.
 - `uv run pytest` – placeholder command once tests exist; fail fast if any dataset validators are added under `tests/`.
 Set `REPO_PATH` and `ADL_FILE_PATH` via env vars when scripting (`REPO_PATH=~/code/spam uv run python mine_adl_diffs.py`).
 
