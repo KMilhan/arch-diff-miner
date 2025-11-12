@@ -1,135 +1,191 @@
+"""Arch Diff Miner CLI.
+
+This module exposes a Typer-powered command that walks a Git repository,
+locates commits touching a target ADL file, and emits `(intent, code_diffs,
+adl_diff)` tuples into a JSON dataset for downstream fine-tuning.
 """
-mine_adl_diffs.py
+from __future__ import annotations
 
-Scans a Git repository to find commits where the ADL file was changed.
-It then extracts a training data tuple:
-(intent, code_diffs, adl_diff)
-
-This script is the "first shovel" for our 1-stage "LLM Translator"
-by creating the "Diff-to-Diff" training dataset.
-
-Requirements:
-  uv sync  # installs pygit2 via pyproject deps
-"""
 import json
 import logging
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Sequence, Tuple
 
 import pygit2
+import typer
 
-# --- Configuration ---
-# Set these paths to match your local environment
-REPO_PATH = "../spam-bootstrapper"  # Path to your 8,000-line Python package
-ADL_FILE_PATH = "adl.yaml"
-CODE_FILE_EXTENSIONS = ('.py',)  # We only care about Python file diffs
-
-# --- Setup ---
+# --- Logging & CLI wiring ----------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Type alias for our training data structure
-# (Commit Message, List[Python File Diffs], Adl Yaml Diff)
+app = typer.Typer(
+    add_completion=False,
+    help=(
+        "Mine architecture decision log (ADL) commits and export training "
+        "tuples by leveraging pygit2."
+    ),
+)
+
+# --- Constants ----------------------------------------------------------------
 DiffDataPair = Tuple[str, List[str], str]
+DEFAULT_ADL_FILE = "adl.yaml"
+DEFAULT_CODE_EXTENSIONS = (".py",)
+DEFAULT_OUTPUT_PATH = Path("training_dataset.json")
 
 
-def _patch_to_text(patch: pygit2.Patch) -> str:
-    """Convert a pygit2 patch to its textual diff representation."""
-    text = getattr(patch, "text", None)
-    return text if isinstance(text, str) else ""
+# --- Helper functions ---------------------------------------------------------
+def _normalize_rel_path(value: str) -> str:
+    """Normalize repository-relative file paths for libgit2 comparisons."""
+    normalized = value.replace("\\", "/").lstrip("./")
+    return normalized or DEFAULT_ADL_FILE
 
 
-def _discover_repository(repo_path: str) -> Optional[pygit2.Repository]:
+def _normalize_extensions(exts: Sequence[str]) -> Tuple[str, ...]:
+    """Ensure extensions start with a dot and compare case-insensitively."""
+    cleaned: List[str] = []
+    for ext in exts:
+        candidate = ext.strip()
+        if not candidate:
+            continue
+        if not candidate.startswith('.'):
+            candidate = f".{candidate}"
+        cleaned.append(candidate.lower())
+    return tuple(dict.fromkeys(cleaned)) or DEFAULT_CODE_EXTENSIONS
+
+
+def _discover_repository(repo_path: Path) -> Optional[pygit2.Repository]:
     """Locate and open a Git repository starting from repo_path."""
     try:
-        git_dir = pygit2.discover_repository(repo_path)
+        git_dir = pygit2.discover_repository(str(repo_path))
     except (KeyError, pygit2.GitError):
         git_dir = None
 
     if not git_dir:
-        logger.error(f"Error: Path '{repo_path}' is not inside a Git repository.")
+        logger.error("Error: Path '%s' is not inside a Git repository.", repo_path)
         return None
 
     try:
         return pygit2.Repository(git_dir)
     except pygit2.GitError as error:
-        logger.error(f"Error opening repository at '{repo_path}': {error}")
+        logger.error("Error opening repository at '%s': %s", repo_path, error)
         return None
 
 
+def _patch_text(patch: pygit2.Patch) -> str:
+    """Extract textual diff content from a pygit2 Patch."""
+    text = getattr(patch, "text", None)
+    return text if isinstance(text, str) else ""
+
+
 def _single_file_diff(
+    repo: pygit2.Repository,
     parent_tree: pygit2.Tree,
     current_tree: pygit2.Tree,
     target_path: str,
 ) -> str:
     """Return the textual diff for a single file path."""
     try:
-        diff = parent_tree.diff(
+        diff = repo.diff(
+            parent_tree,
             current_tree,
             paths=[target_path],
             context_lines=3,
             interhunk_lines=1,
         )
     except pygit2.GitError as error:
-        logger.error(f"Could not diff {target_path}: {error}")
+        logger.error("Could not diff %s: %s", target_path, error)
         return ""
 
     for patch in diff:
-        patch_text = _patch_to_text(patch)
+        patch_text = _patch_text(patch)
         if patch_text:
             return patch_text
     return ""
 
 
 def _collect_code_diffs(
+    repo: pygit2.Repository,
     parent_tree: pygit2.Tree,
     current_tree: pygit2.Tree,
     adl_file: str,
+    code_extensions: Sequence[str],
 ) -> List[str]:
     """Gather diff text for code files that changed in the commit."""
     try:
-        diff = parent_tree.diff(
+        diff = repo.diff(
+            parent_tree,
             current_tree,
             context_lines=3,
             interhunk_lines=1,
         )
     except pygit2.GitError as error:
-        logger.error(f"Could not compute code diffs: {error}")
+        logger.error("Could not compute code diffs: %s", error)
         return []
 
+    adl_path = adl_file.lower()
     code_diffs: List[str] = []
+
     for patch in diff:
         path = patch.delta.new_file.path or patch.delta.old_file.path
-        if not path or path == adl_file or not path.endswith(CODE_FILE_EXTENSIONS):
+        if not path:
             continue
 
-        patch_text = _patch_to_text(patch)
+        normalized_path = path.lower()
+        if normalized_path == adl_path:
+            continue
+        if not any(normalized_path.endswith(ext) for ext in code_extensions):
+            continue
+
+        patch_text = _patch_text(patch)
         if patch_text:
             code_diffs.append(patch_text)
+
     return code_diffs
 
 
+def _log_sample(training_pairs: List[DiffDataPair]) -> None:
+    """Log the first tuple for quick inspection."""
+    if not training_pairs:
+        return
+
+    intent, code_diffs, adl_diff = training_pairs[0]
+    logger.info("-" * 40)
+    logger.info("Example of the first training pair extracted:")
+    logger.info("\nINTENT (X2):\n%s\n", intent)
+    logger.info("CODE DIFFS (X1) - (%s files):", len(code_diffs))
+    if code_diffs:
+        logger.info("--- Diff for first code file ---\n%s\n", code_diffs[0])
+    else:
+        logger.info("  (No code diffs in this commit)\n")
+    logger.info("ADL DIFF (Y):\n%s\n", adl_diff)
+    logger.info("-" * 40)
+
+
+def _write_training_dataset(
+    output_path: Path,
+    training_pairs: List[DiffDataPair],
+) -> Path:
+    """Persist the training tuples to disk and return the resolved path."""
+    resolved = output_path.expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(
+        json.dumps(training_pairs, indent=2),
+        encoding="utf-8",
+    )
+    return resolved
+
+
+# --- Core mining logic --------------------------------------------------------
 def mine_repository(
-    repo_path: str,
+    repo_path: Path,
     adl_file: str,
+    code_extensions: Sequence[str],
 ) -> List[DiffDataPair]:
-    """
-    Mines a repository to extract (Intent, Code Diff, ADL Diff) pairs.
-
-    This iterates through all commits that modified the target ADL file
-    and creates a diff against their parent.
-
-    Args:
-        repo_path: The file system path to the Git repository.
-        adl_file: The relative path to the ADL file within the repo.
-
-    Returns:
-        A list of DiffDataPair tuples, ready for training.
-    """
-    logger.info(f"Opening repository at: {repo_path}")
+    """Extract `(intent, code_diffs, adl_diff)` tuples from repo history."""
+    logger.info("Opening repository at: %s", repo_path)
     repo = _discover_repository(repo_path)
     if repo is None:
         return []
@@ -137,108 +193,135 @@ def mine_repository(
     try:
         head_id = repo.head.target
     except pygit2.GitError:
-        logger.error(f"Repository '{repo_path}' has no HEAD.")
+        logger.error("Repository '%s' has no HEAD.", repo_path)
         return []
 
     walker = repo.walk(head_id, pygit2.GIT_SORT_TOPOLOGICAL)
     walker.simplify_first_parent()
 
-    logger.info(f"Scanning for commits that changed: {adl_file}")
+    normalized_adl_path = _normalize_rel_path(adl_file)
+    normalized_exts = _normalize_extensions(code_extensions)
+
+    logger.info("Scanning for commits that changed: %s", normalized_adl_path)
 
     training_data: List[DiffDataPair] = []
     adl_commit_count = 0
 
     for target_commit in walker:
-        # We need a parent to create a diff. Skip the root commit.
         if not target_commit.parents:
             commit_id = str(target_commit.id)
-            logger.info(
-                f"Skipping root commit {commit_id} (no parent).",
-            )
+            logger.info("Skipping root commit %s (no parent).", commit_id)
             continue
 
-        # Get the parent commit (the "Before" state, x_k)
         parent_commit = target_commit.parents[0]
         commit_id = str(target_commit.id)
         parent_id = str(parent_commit.id)
-        logger.info(
-            f"Processing Target Commit (After): {commit_id}",
-        )
-        logger.info(
-            f"           Parent Commit (Before): {parent_id}",
-        )
+        logger.info("Processing Target Commit (After): %s", commit_id)
+        logger.info("           Parent Commit (Before): %s", parent_id)
 
-        # 1. Get the 'Intent' (X2) from the target commit message
-        intent_x2 = target_commit.message
-
-        # 2. Get the 'ADL Diff' (Y)
         parent_tree = parent_commit.tree
         current_tree = target_commit.tree
-        adl_diff_y = _single_file_diff(parent_tree, current_tree, adl_file)
+
+        adl_diff_y = _single_file_diff(
+            repo,
+            parent_tree,
+            current_tree,
+            normalized_adl_path,
+        )
 
         if not adl_diff_y:
             continue
         adl_commit_count += 1
 
-        # 3. Get the 'Code Diffs' (X1)
-        code_diffs_x1 = _collect_code_diffs(parent_tree, current_tree, adl_file)
+        code_diffs_x1 = _collect_code_diffs(
+            repo,
+            parent_tree,
+            current_tree,
+            normalized_adl_path,
+            normalized_exts,
+        )
 
-        # We only save data if there was an *actual* change
-        # in either the ADL or the code.
-        if code_diffs_x1 or adl_diff_y:
-            data_pair: DiffDataPair = (intent_x2, code_diffs_x1, adl_diff_y)
-            training_data.append(data_pair)
-            logger.info(
-                f"  -> SUCCESS: Found {len(code_diffs_x1)} code diffs "
-                f"and 1 ADL diff.",
-            )
-        else:
-            logger.info("  -> SKIPPED: No meaningful diffs found.")
+        intent_x2 = target_commit.message
+
+        data_pair: DiffDataPair = (intent_x2, code_diffs_x1, adl_diff_y)
+        training_data.append(data_pair)
+        logger.info(
+            "  -> SUCCESS: Found %s code diffs and 1 ADL diff.",
+            len(code_diffs_x1),
+        )
 
     if not adl_commit_count:
-        logger.warning(f"No commits found that modified '{adl_file}'.")
+        logger.warning("No commits found that modified '%s'.", normalized_adl_path)
+
     logger.info(
-        f"Mining complete. Extracted {len(training_data)} training pairs.",
+        "Mining complete. Extracted %s training pairs.",
+        len(training_data),
     )
     return training_data
 
 
-def main():
-    """Main function to run the diff mining process."""
-    
-    # Ensure the path is correct
-    repo_dir = Path(REPO_PATH).expanduser()
-    adl_file_rel_path = ADL_FILE_PATH
-    
+# --- Typer command ------------------------------------------------------------
+@app.command()
+def mine(
+    repo_path: Path = typer.Option(
+        ...,
+        "--repo-path",
+        envvar="REPO_PATH",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to the Git repository containing the ADL file.",
+    ),
+    adl_file: str = typer.Option(
+        DEFAULT_ADL_FILE,
+        "--adl-file",
+        envvar="ADL_FILE_PATH",
+        help="Path to the ADL file relative to the repo root.",
+        show_default=True,
+    ),
+    output_path: Path = typer.Option(
+        DEFAULT_OUTPUT_PATH,
+        "--output",
+        "-o",
+        envvar="TRAINING_DATASET_PATH",
+        help="Where to write the JSON dataset.",
+        show_default=True,
+    ),
+    code_extensions: List[str] = typer.Option(
+        list(DEFAULT_CODE_EXTENSIONS),
+        "--code-ext",
+        "-c",
+        help="Repeat for additional file extensions to include (e.g., --code-ext .py --code-ext .rs).",
+        show_default=True,
+    ),
+) -> None:
+    """Mine ADL-related commits and persist the resulting dataset."""
+    normalized_exts = _normalize_extensions(code_extensions)
     training_pairs = mine_repository(
-        repo_path=str(repo_dir),
-        adl_file=adl_file_rel_path,
+        repo_path=repo_path,
+        adl_file=adl_file,
+        code_extensions=normalized_exts,
     )
-    
-    if training_pairs:
-        logger.info("-" * 40)
-        logger.info("Example of the first training pair extracted:")
-        
-        intent, code_diffs, adl_diff = training_pairs[0]
-        
-        logger.info(f"\nINTENT (X2):\n{intent}\n")
-        
-        logger.info(f"CODE DIFFS (X1) - ({len(code_diffs)} files):")
-        if code_diffs:
-            logger.info(f"--- Diff for first code file ---\n{code_diffs[0]}\n")
-        else:
-            logger.info("  (No code diffs in this commit)\n")
-        
-        logger.info(f"ADL DIFF (Y):\n{adl_diff}\n")
-        logger.info("-" * 40)
 
-        # Here you would save this data to a file (e.g., JSON, Parquet)
-        # for the LLM Finetuning step.
-        # Example:
-        with open("training_dataset.json", "w") as f:
-             json.dump(training_pairs, f, indent=2)
+    if not training_pairs:
+        logger.warning("No training pairs were found; dataset not written.")
+        raise typer.Exit(code=1)
+
+    destination = _write_training_dataset(output_path, training_pairs)
+    logger.info(
+        "Saved %s training pairs to %s",
+        len(training_pairs),
+        destination,
+    )
+    _log_sample(training_pairs)
+
+
+def main() -> None:
+    """Entry point for tooling that still expects a callable main."""
+    app()
 
 
 if __name__ == "__main__":
     main()
-    

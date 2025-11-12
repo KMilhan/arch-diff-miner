@@ -4,7 +4,7 @@
 - `main.py` – lightweight entry point used for smoke-testing interpreter wiring.
 - `mine_adl_diffs.py` – core miner that walks a target repo, gathers `(intent, code_diffs, adl_diff)` tuples, and persists them to `training_dataset.json`.
 - `training_dataset.json` – generated output; keep large snapshots out of git or prune before committing.
-- `pyproject.toml` / `uv.lock` – Python 3.14 project definition and locked dependencies (currently `pygit2` + friends).
+- `pyproject.toml` / `uv.lock` – Python 3.14 project definition and locked dependencies (currently `pygit2`, `typer`, and transitive helpers).
 Keep helper scripts beside the miner so paths stay relative; place any future tests in `tests/` mirroring module names (`tests/test_mine_adl_diffs.py`).
 
 ## Task Tracking & Workflow
@@ -18,6 +18,7 @@ Keep helper scripts beside the miner so paths stay relative; place any future te
 - `uv sync` – installs the locked environment; prefer this over bare `pip` so everyone targets Python 3.14.
 - `uv run python main.py` – ensures the entry point and logging stack still execute after edits.
 - `uv run python mine_adl_diffs.py` – mines diffs using the `REPO_PATH` pointing at your local ADL source repo and refreshes `training_dataset.json`.
+- `uv run python mine_adl_diffs.py --help` – inspect the Typer CLI and available options.
 - `uv run pytest` – placeholder command once tests exist; fail fast if any dataset validators are added under `tests/`.
 Set `REPO_PATH` and `ADL_FILE_PATH` via env vars when scripting (`REPO_PATH=~/code/spam uv run python mine_adl_diffs.py`).
 
