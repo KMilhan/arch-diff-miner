@@ -1,18 +1,49 @@
 """Arch Diff Miner Typer CLI."""
 from __future__ import annotations
 
-import json
 import logging
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import TypedDict
 
 import pygit2
+
+try:  # pygit2 >= 1.14 provides these enums
+    from pygit2 import GIT_DELTA_ADDED, GIT_DELTA_DELETED, GIT_DELTA_MODIFIED, GIT_DELTA_RENAMED
+except ImportError:  # pragma: no cover - fallback for older pygit2
+    GIT_DELTA_ADDED = 1
+    GIT_DELTA_DELETED = 2
+    GIT_DELTA_MODIFIED = 3
+    GIT_DELTA_RENAMED = 4
+
+
 import typer
 
-DiffDataPair = Tuple[str, List[str], str]
+from .jsonl_writer import write_jsonl_dataset
+
+
+class TrainingSample(TypedDict):
+    """Intermediate in-memory sample before JSONL emission."""
+
+    commit_hash: str
+    parent_hash: str
+    authored_at: str
+    committed_at: str
+    author_name: str
+    author_email: str
+    committer_name: Optional[str]
+    committer_email: Optional[str]
+    is_merge: bool
+    intent_message: str
+    adl_diff: Dict[str, Any]
+    code_diffs: List[Dict[str, Any]]
 DEFAULT_ADL_FILE = "adl.yaml"
 DEFAULT_CODE_EXTENSIONS = (".py",)
-DEFAULT_OUTPUT_PATH = Path("training_dataset.json")
+# None indicates stdout per SPEC v1; callers can still supply a file path explicitly.
+DEFAULT_OUTPUT_PATH: Optional[Path] = None
+CODE_EXTS_FLAG_NAMES = ("--code-exts", "-c")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,9 +60,75 @@ app = typer.Typer(
 )
 
 
+def _expand_code_exts_args(argv: List[str]) -> List[str]:
+    """Normalize argv for backwards-compatible commands and code-ext parsing."""
+
+    args = list(argv)
+    # Accept legacy `python -m arch_diff_miner mine ...` invocations by dropping
+    # the redundant subcommand before Typer parses options.
+    if len(args) > 1 and args[1] == "mine":
+        args = [args[0], *args[2:]]
+
+    def _split_inline_values(raw: str) -> List[str]:
+        values = raw.replace(",", " ").split()
+        return values or [raw]
+
+    if len(args) <= 1:
+        return args
+
+    expanded = [args[0]]
+    i = 1
+    while i < len(args):
+        token = args[i]
+        if token == "--":
+            expanded.extend(args[i:])
+            break
+        if token in CODE_EXTS_FLAG_NAMES:
+            expanded.append("--code-exts")
+            i += 1
+            if i >= len(args):
+                break
+            expanded.append(args[i])
+            i += 1
+            while i < len(args):
+                lookahead = args[i]
+                if lookahead.startswith("-"):
+                    break
+                expanded.append("--code-exts")
+                expanded.append(lookahead)
+                i += 1
+            continue
+        if token.startswith("--code-exts="):
+            _, raw_values = token.split("=", 1)
+            for value in _split_inline_values(raw_values):
+                expanded.append("--code-exts")
+                expanded.append(value)
+            i += 1
+            continue
+        if token.startswith("-c="):
+            _, raw_values = token.split("=", 1)
+            for value in _split_inline_values(raw_values):
+                expanded.append("--code-exts")
+                expanded.append(value)
+            i += 1
+            continue
+        expanded.append(token)
+        i += 1
+
+    return expanded
+
+
+sys.argv = _expand_code_exts_args(sys.argv)
+
+
+def _clean_rel_path(value: str) -> str:
+    """Normalize repository-relative file paths without applying defaults."""
+    return value.replace("\\", "/").lstrip("./") if value else ""
+
+
 def _normalize_rel_path(value: str) -> str:
     """Normalize repository-relative file paths for libgit2 comparisons."""
-    normalized = value.replace("\\", "/").lstrip("./")
+    normalized = _clean_rel_path(value)
     return normalized or DEFAULT_ADL_FILE
 
 
@@ -66,46 +163,113 @@ def _discover_repository(repo_path: Path) -> Optional[pygit2.Repository]:
         return None
 
 
-def _patch_text(patch: pygit2.Patch) -> str:
-    """Extract textual diff content from a pygit2 Patch."""
-    text = getattr(patch, "text", None)
-    return text if isinstance(text, str) else ""
-
-
-def _single_file_diff(
-    repo: pygit2.Repository,
-    parent_tree: pygit2.Tree,
-    current_tree: pygit2.Tree,
-    target_path: str,
+def _patch_text(
+    patch: pygit2.Patch,
+    path: str,
+    kind: str,
 ) -> str:
-    """Return the textual diff for a single file path."""
+    """Extract textual diff content, logging anomalies for ADL/code patches."""
     try:
-        diff = repo.diff(
-            parent_tree,
-            current_tree,
-            paths=[target_path],
-            context_lines=3,
-            interhunk_lines=1,
-        )
-    except pygit2.GitError as error:
-        logger.error("Could not diff %s: %s", target_path, error)
+        text = getattr(patch, "text", None)
+    except UnicodeDecodeError as error:
+        logger.warning("Unicode decode failed for %s '%s': %s", kind, path, error)
         return ""
 
-    for patch in diff:
-        patch_text = _patch_text(patch)
-        if patch_text:
-            return patch_text
-    return ""
+    if not isinstance(text, str):
+        logger.warning("Binary diff detected for %s '%s'; skipping.", kind, path)
+        return ""
+
+    if not text.strip():
+        # Blank patches generally mean pure mode/rename changes.
+        return ""
+
+    return text
 
 
-def _collect_code_diffs(
+def _delta_status_name(delta_status: int) -> str:
+    """Map pygit2 delta status to a human-friendly string."""
+    mapping = {
+        GIT_DELTA_ADDED: "added",
+        GIT_DELTA_DELETED: "deleted",
+        GIT_DELTA_MODIFIED: "modified",
+        GIT_DELTA_RENAMED: "renamed",
+    }
+    return mapping.get(delta_status, "unknown")
+
+
+def _extract_hunks(patch_text: str) -> List[Dict[str, Any]]:
+    """Parse unified diff text into structured hunks."""
+    if not patch_text:
+        return []
+
+    hunks: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+
+    for line in patch_text.splitlines():
+        if line.startswith("@@"):
+            if current:
+                hunks.append(current)
+            current = {"header": line, "added": [], "removed": [], "context": []}
+            continue
+
+        if current is None:
+            # Skip diff headers
+            continue
+
+        if line.startswith("+"):
+            current["added"].append(line[1:])
+        elif line.startswith("-"):
+            current["removed"].append(line[1:])
+        elif line.startswith(" "):
+            current["context"].append(line[1:])
+        else:
+            current["context"].append(line)
+
+    if current:
+        hunks.append(current)
+
+    return hunks
+
+
+def _count_stats_from_text(patch_text: str) -> Dict[str, int]:
+    """Return additions/deletions counts for a diff text."""
+    adds = 0
+    dels = 0
+    for line in patch_text.splitlines():
+        if line.startswith("@@") or line.startswith("---") or line.startswith("+++"):
+            continue
+        if line.startswith("+"):
+            adds += 1
+        elif line.startswith("-"):
+            dels += 1
+    return {"additions": adds, "deletions": dels}
+
+
+def _format_timestamp(signature: pygit2.Signature) -> str:
+    """Convert a pygit2 signature timestamp into an ISO-8601 UTC string."""
+    tz = timezone(timedelta(minutes=signature.offset))
+    dt = datetime.fromtimestamp(signature.time, tz)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class _AdlDiffResult(TypedDict, total=False):
+    patch_text: str
+    status: str
+    current_path: str
+    previous_path: Optional[str]
+    touched: bool
+    hunks: List[Dict[str, Any]]
+    stats: Dict[str, int]
+
+
+def _collect_commit_diffs(
     repo: pygit2.Repository,
     parent_tree: pygit2.Tree,
     current_tree: pygit2.Tree,
-    adl_file: str,
+    tracked_adl_path: str,
     code_extensions: Sequence[str],
-) -> List[str]:
-    """Gather diff text for code files that changed in the commit."""
+) -> Tuple[_AdlDiffResult, List[Dict[str, Any]]]:
+    """Return ADL diff metadata and filtered code diffs for the commit."""
     try:
         diff = repo.diff(
             parent_tree,
@@ -114,68 +278,126 @@ def _collect_code_diffs(
             interhunk_lines=1,
         )
     except pygit2.GitError as error:
-        logger.error("Could not compute code diffs: %s", error)
-        return []
+        logger.error("Could not compute diff for commit: %s", error)
+        return {"touched": False}, []
 
-    adl_path = adl_file.lower()
-    code_diffs: List[str] = []
+    try:
+        diff.find_similar()
+    except AttributeError:  # pragma: no cover - older pygit2
+        pass
+
+    tracked_lower = tracked_adl_path.lower()
+    adl_result: _AdlDiffResult = {"touched": False}
+    code_diffs: List[Dict[str, Any]] = []
 
     for patch in diff:
-        path = patch.delta.new_file.path or patch.delta.old_file.path
-        if not path:
+        delta = patch.delta
+        path_new = _clean_rel_path(delta.new_file.path or "")
+        path_old = _clean_rel_path(delta.old_file.path or "")
+        normalized_new = path_new.lower()
+        normalized_old = path_old.lower()
+
+        # Determine if this patch corresponds to the tracked ADL path.
+        is_adl_patch = (
+            normalized_new == tracked_lower
+            or (not path_new and normalized_old == tracked_lower)
+            or (
+                delta.status == GIT_DELTA_RENAMED
+                and normalized_new == tracked_lower
+            )
+        )
+
+        if is_adl_patch and not adl_result.get("touched"):
+            adl_patch_text = _patch_text(patch, path_new or path_old, "ADL")
+            adl_result = {
+                "patch_text": adl_patch_text,
+                "status": _delta_status_name(delta.status),
+                "current_path": path_new or path_old,
+                "previous_path": path_old if delta.status == GIT_DELTA_RENAMED else None,
+                "touched": True,
+                "hunks": _extract_hunks(adl_patch_text),
+                "stats": _count_stats_from_text(adl_patch_text),
+            }
             continue
 
-        normalized_path = path.lower()
-        if normalized_path == adl_path:
+        # Otherwise, treat as a potential code diff.
+        candidate_path = path_new or path_old
+        if not candidate_path:
             continue
-        if not any(normalized_path.endswith(ext) for ext in code_extensions):
+        normalized_candidate = candidate_path.lower()
+        if normalized_candidate == tracked_lower:
+            continue
+        if not any(normalized_candidate.endswith(ext) for ext in code_extensions):
             continue
 
-        patch_text = _patch_text(patch)
-        if patch_text:
-            code_diffs.append(patch_text)
+        patch_text = _patch_text(patch, candidate_path, "code")
+        hunks = _extract_hunks(patch_text)
+        if hunks:
+            code_diffs.append(
+                {
+                    "path": candidate_path,
+                    "status": _delta_status_name(delta.status),
+                    "extension": Path(candidate_path).suffix or "",
+                    "language": None,
+                    "hunks": hunks,
+                    "stats": _count_stats_from_text(patch_text),
+                }
+            )
 
-    return code_diffs
+    return adl_result, code_diffs
 
 
-def _log_sample(training_pairs: List[DiffDataPair]) -> None:
+def _log_sample(training_pairs: List[TrainingSample]) -> None:
     """Log the first tuple for quick inspection."""
     if not training_pairs:
         return
 
-    intent, code_diffs, adl_diff = training_pairs[0]
+    sample = training_pairs[0]
+    intent = sample["intent_message"]
+    code_diffs = sample["code_diffs"]
+    adl_diff = sample["adl_diff"]
     logger.info("-" * 40)
     logger.info("Example of the first training pair extracted:")
     logger.info("\nINTENT (X2):\n%s\n", intent)
     logger.info("CODE DIFFS (X1) - (%s files):", len(code_diffs))
     if code_diffs:
-        logger.info("--- Diff for first code file ---\n%s\n", code_diffs[0])
+        first_code = code_diffs[0]
+        if first_code.get("hunks"):
+            code_preview = "\n".join(first_code["hunks"][0]["added"][:20]) or "(context only)"
+        else:
+            code_preview = "(no hunks)"
+        logger.info(
+            "--- Diff for first code file (%s) ---\n%s\n",
+            first_code["path"],
+            code_preview,
+        )
     else:
         logger.info("  (No code diffs in this commit)\n")
-    logger.info("ADL DIFF (Y):\n%s\n", adl_diff)
+    adl_hunks = adl_diff.get("hunks", [])
+    if adl_hunks:
+        adl_preview = "\n".join(adl_hunks[0]["added"]) or "(context only)"
+    else:
+        adl_preview = "(no hunks)"
+    logger.info("ADL DIFF (Y):\n%s\n", adl_preview)
     logger.info("-" * 40)
 
 
 def _write_training_dataset(
-    output_path: Path,
-    training_pairs: List[DiffDataPair],
-) -> Path:
-    """Persist the training tuples to disk and return the resolved path."""
-    resolved = output_path.expanduser().resolve()
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(
-        json.dumps(training_pairs, indent=2),
-        encoding="utf-8",
-    )
-    return resolved
+    output_path: Optional[Path],
+    training_pairs: List[TrainingSample],
+) -> Tuple[Optional[Path], int]:
+    """Stream samples to stdout or a destination file as JSONL."""
+    destination = output_path.expanduser().resolve() if output_path else None
+    written = write_jsonl_dataset(training_pairs, destination)
+    return destination, written
 
 
 def mine_repository(
     repo_path: Path,
     adl_file: str,
     code_extensions: Sequence[str],
-) -> List[DiffDataPair]:
-    """Extract `(intent, code_diffs, adl_diff)` tuples from repo history."""
+) -> List[TrainingSample]:
+    """Extract structured samples for commits touching the ADL file."""
     logger.info("Opening repository at: %s", repo_path)
     repo = _discover_repository(repo_path)
     if repo is None:
@@ -195,8 +417,9 @@ def mine_repository(
 
     logger.info("Scanning for commits that changed: %s", normalized_adl_path)
 
-    training_data: List[DiffDataPair] = []
+    training_data: List[TrainingSample] = []
     adl_commit_count = 0
+    tracked_adl_path = normalized_adl_path
 
     for target_commit in walker:
         if not target_commit.parents:
@@ -207,34 +430,69 @@ def mine_repository(
         parent_commit = target_commit.parents[0]
         commit_id = str(target_commit.id)
         parent_id = str(parent_commit.id)
+        is_merge = len(target_commit.parents) > 1
         logger.info("Processing Target Commit (After): %s", commit_id)
         logger.info("           Parent Commit (Before): %s", parent_id)
 
         parent_tree = parent_commit.tree
         current_tree = target_commit.tree
 
-        adl_diff_y = _single_file_diff(
+        adl_result, code_diffs_x1 = _collect_commit_diffs(
             repo,
             parent_tree,
             current_tree,
-            normalized_adl_path,
-        )
-
-        if not adl_diff_y:
-            continue
-        adl_commit_count += 1
-
-        code_diffs_x1 = _collect_code_diffs(
-            repo,
-            parent_tree,
-            current_tree,
-            normalized_adl_path,
+            tracked_adl_path,
             normalized_exts,
         )
 
-        intent_x2 = target_commit.message
+        if adl_result.get("previous_path"):
+            tracked_adl_path = _normalize_rel_path(adl_result["previous_path"] or tracked_adl_path)
 
-        data_pair: DiffDataPair = (intent_x2, code_diffs_x1, adl_diff_y)
+        if not adl_result.get("touched"):
+            continue
+
+        adl_hunks = adl_result.get("hunks", [])
+        if not adl_hunks:
+            logger.info(
+                "  -> SKIP: ADL diff empty or non-textual (status=%s)",
+                adl_result.get("status", "unknown"),
+            )
+            continue
+
+        if not code_diffs_x1:
+            logger.info(
+                "  -> SKIP: Commit %s touched ADL but has no matching code diffs.",
+                commit_id,
+            )
+            continue
+
+        adl_commit_count += 1
+
+        intent_x2 = (target_commit.message or "").strip()
+
+        author = target_commit.author
+        committer = target_commit.committer
+
+        data_pair: TrainingSample = {
+            "commit_hash": commit_id,
+            "parent_hash": parent_id,
+            "authored_at": _format_timestamp(author),
+            "committed_at": _format_timestamp(committer),
+            "author_name": author.name or "",
+            "author_email": author.email or "",
+            "committer_name": committer.name or author.name or "",
+            "committer_email": committer.email or author.email or "",
+            "is_merge": is_merge,
+            "intent_message": intent_x2,
+            "adl_diff": {
+                "path": adl_result.get("current_path") or tracked_adl_path,
+                "previous_path": adl_result.get("previous_path"),
+                "status": adl_result.get("status", "modified"),
+                "hunks": adl_result.get("hunks", []),
+                "stats": adl_result.get("stats", {"additions": 0, "deletions": 0}),
+            },
+            "code_diffs": code_diffs_x1,
+        }
         training_data.append(data_pair)
         logger.info(
             "  -> SUCCESS: Found %s code diffs and 1 ADL diff.",
@@ -251,61 +509,62 @@ def mine_repository(
     return training_data
 
 
-@app.command()
+@app.command(name="mine")
 def mine(
-    repo_path: Path = typer.Option(
+    repo: Path = typer.Option(
         ...,
-        "--repo-path",
+        "--repo",
         envvar="REPO_PATH",
         exists=True,
         file_okay=False,
         dir_okay=True,
         readable=True,
         resolve_path=True,
-        help="Path to the Git repository containing the ADL file.",
+        help="Required path to the Git repository containing the ADL file.",
     ),
     adl_file: str = typer.Option(
         DEFAULT_ADL_FILE,
         "--adl-file",
         envvar="ADL_FILE_PATH",
-        help="Path to the ADL file relative to the repo root.",
+        help="ADL file relative to the repo root (supports glob-style patterns).",
         show_default=True,
     ),
-    output_path: Path = typer.Option(
+    code_extensions: Optional[List[str]] = typer.Option(
+        None,
+        "--code-exts",
+        "-c",
+        help=(
+            "Space-delimited or repeated list of code extensions to include "
+            "(e.g., --code-exts .py .rs or --code-exts .py --code-exts .rs)."
+        ),
+        show_default=False,
+    ),
+    output_path: Optional[Path] = typer.Option(
         DEFAULT_OUTPUT_PATH,
         "--output",
         "-o",
         envvar="TRAINING_DATASET_PATH",
-        help="Where to write the JSON dataset.",
-        show_default=True,
-    ),
-    code_extensions: List[str] = typer.Option(
-        list(DEFAULT_CODE_EXTENSIONS),
-        "--code-ext",
-        "-c",
-        help=(
-            "Repeat for additional file extensions to include "
-            "(e.g., --code-ext .py --code-ext .rs)."
-        ),
-        show_default=True,
+        help="Path to write the JSON dataset (defaults to stdout when omitted).",
+        show_default=False,
     ),
 ) -> None:
     """Mine ADL-related commits and persist the resulting dataset."""
     training_pairs = mine_repository(
-        repo_path=repo_path,
+        repo_path=repo,
         adl_file=adl_file,
-        code_extensions=code_extensions,
+        code_extensions=code_extensions or list(DEFAULT_CODE_EXTENSIONS),
     )
 
     if not training_pairs:
         logger.warning("No training pairs were found; dataset not written.")
         raise typer.Exit(code=1)
 
-    destination = _write_training_dataset(output_path, training_pairs)
+    destination, written = _write_training_dataset(output_path, training_pairs)
+    target_display = "stdout" if destination is None else str(destination)
     logger.info(
         "Saved %s training pairs to %s",
-        len(training_pairs),
-        destination,
+        written,
+        target_display,
     )
     _log_sample(training_pairs)
 
