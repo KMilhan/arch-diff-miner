@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 logger = logging.getLogger(__name__)
-DATASET_VERSION = "adl-diff-miner-schema-2025-01"
+DATASET_VERSION = "adl-diff-miner-schema-v2.0"
 
 
 JsonlRecord = Dict[str, Any]
@@ -18,6 +18,42 @@ JsonlRecord = Dict[str, Any]
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_context_signals(raw: Dict[str, Any]) -> Dict[str, Any]:
+    files = raw.get("files_analyzed") or []
+    deduped_files = list(dict.fromkeys(files))
+
+    aggregate = raw.get("aggregate_stats") or {}
+    aggregate_block = {
+        "total_commits": int(aggregate.get("total_commits", 0)),
+        "total_unique_authors": int(aggregate.get("total_unique_authors", 0)),
+        "most_recent_change_days_ago": float(
+            aggregate.get("most_recent_change_days_ago", 0.0)
+        ),
+    }
+
+    per_file_entries: List[Dict[str, Any]] = []
+    for entry in raw.get("per_file_stats") or []:
+        per_file_entries.append(
+            {
+                "path": entry.get("path"),
+                "churn_count": int(entry.get("churn_count", 0)),
+                "unique_authors": int(entry.get("unique_authors", 0)),
+                "last_modified_days_ago": float(
+                    entry.get("last_modified_days_ago", 0.0)
+                ),
+                "top_authors": entry.get("top_authors", []),
+            }
+        )
+
+    return {
+        "analysis_parent_hash": raw.get("analysis_parent_hash"),
+        "analysis_timespan_days": int(raw.get("analysis_timespan_days", 0)),
+        "files_analyzed": deduped_files,
+        "aggregate_stats": aggregate_block,
+        "per_file_stats": per_file_entries,
+    }
 
 
 def _build_record(sample: Dict[str, Any]) -> Optional[JsonlRecord]:
@@ -97,6 +133,10 @@ def _build_record(sample: Dict[str, Any]) -> Optional[JsonlRecord]:
             "generated_at": _now_utc_iso(),
         },
     }
+
+    context_signals = sample.get("context_signals")
+    if context_signals:
+        record["context_signals"] = _normalize_context_signals(context_signals)
 
     return record
 

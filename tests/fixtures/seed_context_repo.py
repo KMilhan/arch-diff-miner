@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,7 @@ def seed_context_repo(tmp_path: Path) -> SeededContextRepo:
                 "src/helpers.py": "HELPERS = ['seed']\n",
             },
             "message": "seed files",
+            "new_adl_route": ("core", "/"),
         },
         {
             "offset": 3,
@@ -79,6 +80,7 @@ def seed_context_repo(tmp_path: Path) -> SeededContextRepo:
                 "src/service.py": "print('svc v2 from grace')\n",
             },
             "message": "grace tweaks service",
+            "new_adl_route": ("health", "/health"),
         },
         {
             "offset": 7,
@@ -87,6 +89,7 @@ def seed_context_repo(tmp_path: Path) -> SeededContextRepo:
                 "src/helpers.py": "HELPERS = ['seed', 'ada']\n",
             },
             "message": "ada extends helpers",
+            "new_adl_route": ("metrics", "/metrics"),
         },
         {
             "offset": 10,
@@ -95,15 +98,30 @@ def seed_context_repo(tmp_path: Path) -> SeededContextRepo:
                 "src/helpers.py": "HELPERS = ['seed', 'ada', 'barbara']\n",
             },
             "message": "barbara patches helpers",
+            "new_adl_route": ("admin", "/admin"),
         },
     ]
 
     history: Dict[str, Dict[str, object]] = {}
+    adl_routes: List[Tuple[str, str]] = []
     head_sha = ""
+
+    def _render_adl(routes: List[Tuple[str, str]]) -> str:
+        lines = ["routes:"]
+        for name, path in routes:
+            lines.append(f"  - name: {name}")
+            lines.append(f"    path: {path}")
+        lines.append("")
+        return "\n".join(lines)
 
     for entry in timeline:
         commit_time = base_time + timedelta(days=entry["offset"])
         author_name, author_email = entry["author"]
+        entry.setdefault("files", {})
+        new_route = entry.get("new_adl_route")
+        if new_route:
+            adl_routes.append(new_route)
+        entry["files"]["adl.yaml"] = _render_adl(adl_routes)
         for rel_path, contents in entry["files"].items():
             _write(repo_path, rel_path, contents)
 
@@ -121,6 +139,8 @@ def seed_context_repo(tmp_path: Path) -> SeededContextRepo:
         head_sha = _run_git(repo_path, ["rev-parse", "HEAD"])
 
         for rel_path in entry["files"].keys():
+            if rel_path.endswith(".yaml"):
+                continue
             tracked = history.setdefault(
                 rel_path,
                 {"churn": 0, "authors": set(), "last_modified": commit_time},

@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from conftest import parse_jsonl
+from .conftest import parse_jsonl
 
 
 def run_cli(repo_path: Path, adl_file: str, extra_args: list[str] | None = None) -> list[dict]:

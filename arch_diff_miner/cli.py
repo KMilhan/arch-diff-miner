@@ -41,7 +41,7 @@ class TrainingSample(TypedDict):
     intent_message: str
     adl_diff: Dict[str, Any]
     code_diffs: List[Dict[str, Any]]
-    context_stats: Dict[str, Any]
+    context_signals: Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -502,42 +502,26 @@ def mine_repository(
         unique_code_paths = list(dict.fromkeys(code_paths))
         analysis_until = _signature_datetime(parent_commit.committer)
         analysis_since = analysis_until - timedelta(days=config.context_days)
-        try:
-            per_file_stats, aggregate_stats = collect_context_stats(
-                repo=repo,
-                parent_commit=parent_commit,
-                files=unique_code_paths,
-                since_dt=analysis_since,
-                until_dt=analysis_until,
-            )
-        except Exception as error:  # pragma: no cover - defensive
-            logger.warning(
-                "Context mining failed for commit %s: %s", commit_id, error
-            )
-            per_file_stats = {
-                path: {
-                    "churn_count": 0,
-                    "unique_authors": 0,
-                    "last_modified_days_ago": 0.0,
-                    "top_authors": [],
-                }
-                for path in unique_code_paths
+        per_file_stats, aggregate_stats = collect_context_stats(
+            repo=repo,
+            parent_commit=parent_commit,
+            files=unique_code_paths,
+            since_dt=analysis_since,
+            until_dt=analysis_until,
+        )
+        per_file_list = [
+            {
+                "path": path,
+                **stats,
             }
-            aggregate_stats = {
-                "total_commits": 0,
-                "total_unique_authors": 0,
-                "most_recent_change_days_ago": 0.0,
-            }
-        context_stats = {
+            for path, stats in per_file_stats.items()
+        ]
+        context_signals = {
             "analysis_parent_hash": parent_id,
             "analysis_timespan_days": config.context_days,
-            "analysis_window": {
-                "since": analysis_since.isoformat().replace("+00:00", "Z"),
-                "until": analysis_until.isoformat().replace("+00:00", "Z"),
-            },
             "files_analyzed": unique_code_paths,
-            "per_file_stats": per_file_stats,
             "aggregate_stats": aggregate_stats,
+            "per_file_stats": per_file_list,
         }
 
         intent_x2 = (target_commit.message or "").strip()
@@ -564,7 +548,7 @@ def mine_repository(
                 "stats": adl_result.get("stats", {"additions": 0, "deletions": 0}),
             },
             "code_diffs": code_diffs_x1,
-            "context_stats": context_stats,
+            "context_signals": context_signals,
         }
         training_data.append(data_pair)
         logger.info(

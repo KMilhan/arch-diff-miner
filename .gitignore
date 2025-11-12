@@ -2,7 +2,6 @@
 .code/
 .idea/
 training_dataset_*.jsonl
-RELEASE_NOTES.md
 *~
 
 ### PyCharm+iml template

@@ -1,0 +1,23 @@
+{
+  "analysis_parent_hash": "<dynamic-parent-sha>",
+  "analysis_timespan_days": 30,
+  "files_analyzed": [
+    "src/helpers.py"
+  ],
+  "aggregate_stats": {
+    "total_commits": 2,
+    "total_unique_authors": 1,
+    "most_recent_change_days_ago": 0.0
+  },
+  "per_file_stats": [
+    {
+      "path": "src/helpers.py",
+      "churn_count": 2,
+      "unique_authors": 1,
+      "last_modified_days_ago": 0.0,
+      "top_authors": [
+        "ada@example.com"
+      ]
+    }
+  ]
+}

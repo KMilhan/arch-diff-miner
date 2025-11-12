@@ -27,13 +27,14 @@ Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mi
      --context-days 90 \
      --output training_dataset.jsonl
    ```
-4. Inspect CLI help: `uv run python -m arch_diff_miner --help`.
+4. Inspect CLI help: `uv run python -m arch_diff_miner --help`. *(Tip: `--context-days` defaults to 90, so omitting it keeps the same context window.)*
 
 ## CLI Options
 - `--repo` / `$REPO_PATH` (required) — Absolute path to the Git repository being mined.
 - `--adl-file` / `$ADL_FILE_PATH` (default `adl.yaml`) — ADL file relative to the repo root.
 - `--code-exts` (space-delimited or repeatable, default `.py`) — Additional code extensions to capture alongside the ADL diff.
 - `--output` / `$TRAINING_DATASET_PATH` (default stdout) — Optional destination JSON file; omit to stream to the console.
+- `--context-days` (default `90`) — Look-back window, in days, used to compute per-file churn/author stats for the `context_signals` block. Values below 1 are rejected.
 - `--context-days` (default `90`) — Look-back window, in days, for computing context signals; values below 1 are rejected.
 
 > ADL path matching currently uses an exact, case-insensitive comparison. Glob-style patterns are on the roadmap, but for now provide a single, concrete path like `architectures/adl.yaml`.
@@ -101,8 +102,27 @@ Example record (truncated):
       "stats": {"additions": 2, "deletions": 0}
     }
   ],
+  "context_signals": {
+    "analysis_parent_hash": "<parent-sha>",
+    "analysis_timespan_days": 90,
+    "files_analyzed": ["svc/logging/config.py"],
+    "aggregate_stats": {
+      "total_commits": 9,
+      "total_unique_authors": 3,
+      "most_recent_change_days_ago": 2.5
+    },
+    "per_file_stats": [
+      {
+        "path": "svc/logging/config.py",
+        "churn_count": 6,
+        "unique_authors": 3,
+        "last_modified_days_ago": 2.5,
+        "top_authors": ["dev@example.com", "mlops-bot@example.com"]
+      }
+    ]
+  },
   "metadata": {
-    "dataset_version": "adl-diff-miner-schema-2025-01",
+    "dataset_version": "adl-diff-miner-schema-v2.0",
     "generated_at": "2025-11-12T08:04:05Z"
   }
 }
