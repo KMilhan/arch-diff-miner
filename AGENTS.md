@@ -4,7 +4,7 @@
 - `main.py` – lightweight entry point used for smoke-testing interpreter wiring.
 - `mine_adl_diffs.py` – core miner that walks a target repo, gathers `(intent, code_diffs, adl_diff)` tuples, and persists them to `training_dataset.json`.
 - `training_dataset.json` – generated output; keep large snapshots out of git or prune before committing.
-- `pyproject.toml` / `uv.lock` – Python 3.14 project definition and locked dependencies (currently only `gitpython`).
+- `pyproject.toml` / `uv.lock` – Python 3.14 project definition and locked dependencies (currently `pygit2` + friends).
 Keep helper scripts beside the miner so paths stay relative; place any future tests in `tests/` mirroring module names (`tests/test_mine_adl_diffs.py`).
 
 ## Task Tracking & Workflow

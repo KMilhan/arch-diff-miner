@@ -1,10 +1,10 @@
 # Arch Diff Miner
 
-Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mines architecture decision logs (ADLs) for training data. It walks a target repository, captures `(intent, code_diffs, adl_diff)` tuples, and emits them into `training_dataset.json` for downstream fine-tuning pipelines.
+Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mines architecture decision logs (ADLs) for training data. Powered by `pygit2`/libgit2, it walks a target repository, captures `(intent, code_diffs, adl_diff)` tuples, and emits them into `training_dataset.json` for downstream fine-tuning pipelines.
 
 ## Why a CLI?
 - **Headless-first.** Runs anywhere Git is available, making it easy to integrate into scripts or CI jobs.
-- **Fast despite Python.** GitPython streaming, minimal allocations, and the GIL-free CPython 3.14 runtime keep runtimes competitive with compiled tooling.
+- **Fast despite Python.** pygit2/libgit2 diff streaming, minimal allocations, and the GIL-free CPython 3.14 runtime keep runtimes competitive with compiled tooling.
 - **Deterministic outputs.** With `uv` pinning dependencies, identical inputs yield identical dataset artifacts.
 
 ## Quick Start
