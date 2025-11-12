@@ -1,0 +1,109 @@
+name: Release Notes
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Override start tag (from)"
+        required: false
+        type: string
+        default: ""
+      to:
+        description: "Override end tag (to)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  generate-release-notes:
+    name: Generate and Publish Release Notes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Determine tag range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENT_NAME="${{ github.event_name }}"
+          CURR="${{ github.ref_name }}"
+          FROM_INPUT="${{ inputs.from }}"
+          TO_INPUT="${{ inputs.to }}"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Use provided inputs when manually dispatched (if given)
+            if [[ -n "$TO_INPUT" ]]; then
+              CURR="$TO_INPUT"
+            fi
+            if [[ -n "$FROM_INPUT" ]]; then
+              PREV="$FROM_INPUT"
+            fi
+          fi
+
+          # If PREV not provided, compute previous reachable tag from current tag
+          if [[ -z "${PREV:-}" ]]; then
+            # Resolve current tag to commit and pick the next most recent reachable tag by version order
+            # This prefers semver-ish v* tags and ensures reachability from CURR
+            PREV=$(git tag --merged "$CURR" --sort=-v:refname | grep -v "^${CURR}$" | head -n1 || true)
+          fi
+
+          if [[ -z "$CURR" ]]; then
+            echo "Failed to determine current tag (CURR)" >&2
+            exit 1
+          fi
+
+          if [[ -z "${PREV:-}" ]]; then
+            echo "No previous reachable tag found; notes will cover initial range." >&2
+          fi
+
+          echo "curr=$CURR" >> "$GITHUB_OUTPUT"
+          echo "prev=${PREV:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes with girokmoji
+        shell: bash
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          PREV: ${{ steps.range.outputs.prev }}
+          CURR: ${{ steps.range.outputs.curr }}
+        run: |
+          set -euo pipefail
+
+          RANGE_FLAG=(--range auto)
+          # If PREV is empty (first release), let girokmoji figure it out from auto range
+          if [[ -z "${PREV}" ]]; then
+            uvx --from "girokmoji@latest" \
+              girokmoji generate "${REPO_NAME}" "$(date -u +%F)" . "" "${CURR}" "${RANGE_FLAG[@]}" > release_notes.md
+          else
+            uvx --from "girokmoji@latest" \
+              girokmoji generate "${REPO_NAME}" "$(date -u +%F)" . "${PREV}" "${CURR}" "${RANGE_FLAG[@]}" > release_notes.md
+          fi
+
+          echo "Generated notes for ${REPO_NAME} from '${PREV:-<auto>}' to '${CURR}'."
+
+      - name: Update or create GitHub Release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURR: ${{ steps.range.outputs.curr }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Try to edit an existing release; if it doesn't exist, create it
+          if gh release view "$CURR" >/dev/null 2>&1; then
+            gh release edit "$CURR" --notes-file release_notes.md
+          else
+            gh release create "$CURR" --title "$CURR" --notes-file release_notes.md
+          fi
