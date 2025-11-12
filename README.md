@@ -53,6 +53,16 @@ Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mi
 - Write JSONL to disk: `uv run python -m arch_diff_miner mine --repo $REPO_PATH --adl-file adl.yaml --context-days 90 --output training_dataset.jsonl`
 - Run tests: `uv run pytest`
 
+## Smoke Test
+
+Need a quick sanity check? Run `scripts/run_context_smoke.sh` from the repo root. The script:
+
+- Seeds the deterministic fixture repo used by our tests.
+- Invokes `uv run python -m arch_diff_miner mine ... --context-days 90`.
+- Writes a JSONL file to a temp directory and prints the first record's `context_signals` summary.
+
+Set `ARCH_DIFF_SMOKE_KEEP=1` before running if you want to inspect the generated dataset.
+
 ## Output Format (JSONL)
 - Each line is one self-contained JSON object (no enclosing array) so you can pipe results into downstream tooling.
 - When `--output` is omitted the miner streams to stdout; otherwise it writes UTF-8 JSONL to the provided path.
