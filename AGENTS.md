@@ -28,6 +28,17 @@ Create tests under `tests/` using `pytest`, naming files `test_*.py` and functio
 
 ## Commit & Pull Request Guidelines
 - Keep each commit atomic; pair code edits with dataset snapshots only when they cannot be separated.
-- Format commit messages as a colon-style emoji followed by an imperative title (e.g., `:memo: Document workflow`), then `git push` immediately.
+- **Subject format:** `:<emoji>:` + imperative verb phrase. Examples: `:sparkles: Stream JSONL output`, `:broom: Ignore release artifacts`, `:memo: Clarify CLI defaults`. Always push right after committing.
+- Include a short body describing *why* and *what* (reference issue numbers or dataset filenames when helpful).
+- Handy template: ``git commit -m ":sparkles: Implement X" -m "why: …; what: …" && git push``
 - Because commits lack closing keywords, finish the related GitHub Issue by commenting with the commit link or by running `gh issue close` once the push succeeds.
 - Pull requests should include: purpose summary, reproduction steps (`uv run ...`), sample diff tuple output, and mention of any external repo snapshots; attach screenshots only if you introduce UI/diagram artifacts.
+
+## Issue-Driven Workflow Loop
+1. **Pick an issue** – Prefer open `status:ready` issues (then `priority:high`), scoped to `https://github.com/KMilhan/arch-diff-miner`.
+2. **Start work** – `gh issue edit <n> --add-label "status:in-progress" --remove-label "status:ready"` and comment with a brief plan.
+3. **Implement** – Make a single logical change, commit with the `:<emoji>:` format + explanatory body, push immediately.
+4. **Update the issue** – Comment with the commit SHA/URL, then close it (`gh issue close <n> -c "Done in <sha>"`).
+5. **Repeat as needed** – If more work remains, pick the next ready issue; otherwise stop.
+
+> Tip: If you need a dry run, say “preview start” in notes and list the intended issue/steps before editing labels.
