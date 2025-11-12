@@ -14,7 +14,8 @@
 ## Build, Test, and Development Commands
 - Run everything through `uv` to stay on the locked Python 3.14 freethreaded (no-GIL) toolchain; skip ad-hoc `pip` or system `python` invocations, and install the interpreter with `uv python install 3.14+freethreaded` when needed.
 - `uv sync` – installs the locked environment; prefer this over bare `pip` so everyone targets Python 3.14.
-- `uv run python -m arch_diff_miner mine --repo-path "$REPO_PATH" --adl-file <adl.yaml> --code-ext .py --output training_dataset.json` – mines diffs using the repo you pass via CLI (or the `REPO_PATH` env var Typer picks up) and refreshes `training_dataset.json`. Example: `REPO_PATH=/path/to/adl uv run python -m arch_diff_miner mine --repo-path "$REPO_PATH" --output training_dataset.json`.
+- Stream JSONL to stdout: `uv run python -m arch_diff_miner mine --repo "$REPO_PATH" --adl-file <adl.yaml> --code-exts .py .rs`.
+- Write JSONL to disk: `uv run python -m arch_diff_miner mine --repo "$REPO_PATH" --adl-file <adl.yaml> --code-exts .py --code-exts .rs --output training_dataset.jsonl`.
 - `uv run python -m arch_diff_miner --help` – inspect the Typer CLI and available options.
 - `uv run pytest` – placeholder command once tests exist; fail fast if any dataset validators are added under `tests/`.
 
