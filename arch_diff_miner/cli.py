@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -39,8 +40,21 @@ class TrainingSample(TypedDict):
     intent_message: str
     adl_diff: Dict[str, Any]
     code_diffs: List[Dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class MineConfig:
+    """Runtime settings for a single mining invocation."""
+
+    repo_path: Path
+    adl_file: str
+    code_extensions: Sequence[str]
+    context_days: int
+
+
 DEFAULT_ADL_FILE = "adl.yaml"
 DEFAULT_CODE_EXTENSIONS = (".py",)
+DEFAULT_CONTEXT_DAYS = 90
 # None indicates stdout per SPEC v1; callers can still supply a file path explicitly.
 DEFAULT_OUTPUT_PATH: Optional[Path] = None
 CODE_EXTS_FLAG_NAMES = ("--code-exts", "-c")
@@ -143,6 +157,13 @@ def _normalize_extensions(exts: Sequence[str]) -> Tuple[str, ...]:
             candidate = f".{candidate}"
         cleaned.append(candidate.lower())
     return tuple(dict.fromkeys(cleaned)) or DEFAULT_CODE_EXTENSIONS
+
+
+def _validate_context_days(value: int) -> int:
+    """Ensure the context-days CLI flag is a positive integer."""
+    if value < 1:
+        raise typer.BadParameter("--context-days must be >= 1 day to capture history.")
+    return value
 
 
 def _discover_repository(repo_path: Path) -> Optional[pygit2.Repository]:
@@ -393,11 +414,10 @@ def _write_training_dataset(
 
 
 def mine_repository(
-    repo_path: Path,
-    adl_file: str,
-    code_extensions: Sequence[str],
+    config: MineConfig,
 ) -> List[TrainingSample]:
     """Extract structured samples for commits touching the ADL file."""
+    repo_path = config.repo_path
     logger.info("Opening repository at: %s", repo_path)
     repo = _discover_repository(repo_path)
     if repo is None:
@@ -412,10 +432,11 @@ def mine_repository(
     walker = repo.walk(head_id, pygit2.GIT_SORT_TOPOLOGICAL)
     walker.simplify_first_parent()
 
-    normalized_adl_path = _normalize_rel_path(adl_file)
-    normalized_exts = _normalize_extensions(code_extensions)
+    normalized_adl_path = _normalize_rel_path(config.adl_file)
+    normalized_exts = _normalize_extensions(config.code_extensions)
 
     logger.info("Scanning for commits that changed: %s", normalized_adl_path)
+    logger.info("Context window (days): %s", config.context_days)
 
     training_data: List[TrainingSample] = []
     adl_commit_count = 0
@@ -547,13 +568,29 @@ def mine(
         help="Path to write the JSON dataset (defaults to stdout when omitted).",
         show_default=False,
     ),
+    context_days: int = typer.Option(
+        DEFAULT_CONTEXT_DAYS,
+        "--context-days",
+        help=(
+            "Number of days to look back from each commit's parent when computing "
+            "context signals (values < 1 are rejected)."
+        ),
+        show_default=True,
+        min=1,
+    ),
 ) -> None:
     """Mine ADL-related commits and persist the resulting dataset."""
-    training_pairs = mine_repository(
+    validated_context_days = _validate_context_days(context_days)
+    selected_code_exts: Sequence[str] = (
+        tuple(code_extensions) if code_extensions else DEFAULT_CODE_EXTENSIONS
+    )
+    config = MineConfig(
         repo_path=repo,
         adl_file=adl_file,
-        code_extensions=code_extensions or list(DEFAULT_CODE_EXTENSIONS),
+        code_extensions=selected_code_exts,
+        context_days=validated_context_days,
     )
+    training_pairs = mine_repository(config=config)
 
     if not training_pairs:
         logger.warning("No training pairs were found; dataset not written.")

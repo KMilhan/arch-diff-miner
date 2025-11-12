@@ -4,7 +4,9 @@ from importlib.metadata import version
 from .cli import (
     DEFAULT_ADL_FILE,
     DEFAULT_CODE_EXTENSIONS,
+    DEFAULT_CONTEXT_DAYS,
     DEFAULT_OUTPUT_PATH,
+    MineConfig,
     TrainingSample,
     app,
     main,
@@ -15,7 +17,9 @@ from .cli import (
 __all__ = [
     "DEFAULT_ADL_FILE",
     "DEFAULT_CODE_EXTENSIONS",
+    "DEFAULT_CONTEXT_DAYS",
     "DEFAULT_OUTPUT_PATH",
+    "MineConfig",
     "TrainingSample",
     "app",
     "main",

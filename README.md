@@ -15,7 +15,8 @@ Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mi
    uv run python -m arch_diff_miner mine \
      --repo /path/to/repo \
      --adl-file adl.yaml \
-     --code-exts .py .rs
+     --code-exts .py .rs \
+     --context-days 90
    ```
 3. Same command using repeated flags, but writing to a file:
    ```bash
@@ -23,6 +24,7 @@ Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mi
      --repo /path/to/repo \
      --adl-file adl.yaml \
      --code-exts .py --code-exts .rs \
+     --context-days 90 \
      --output training_dataset.jsonl
    ```
 4. Inspect CLI help: `uv run python -m arch_diff_miner --help`.
@@ -32,6 +34,7 @@ Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mi
 - `--adl-file` / `$ADL_FILE_PATH` (default `adl.yaml`) — ADL file relative to the repo root.
 - `--code-exts` (space-delimited or repeatable, default `.py`) — Additional code extensions to capture alongside the ADL diff.
 - `--output` / `$TRAINING_DATASET_PATH` (default stdout) — Optional destination JSON file; omit to stream to the console.
+- `--context-days` (default `90`) — Look-back window, in days, for computing context signals; values below 1 are rejected.
 
 > ADL path matching currently uses an exact, case-insensitive comparison. Glob-style patterns are on the roadmap, but for now provide a single, concrete path like `architectures/adl.yaml`.
 - Run `uv run python -m arch_diff_miner --help` to view the full Typer help text.
@@ -45,8 +48,8 @@ Arch Diff Miner is a Python 3.14 freethreaded (no-GIL) command-line tool that mi
 - Troubleshooting (no tags): either pass two refs explicitly—`bash scripts/release_notes.sh $(git rev-list --max-parents=0 HEAD) HEAD`—or create an initial tag such as `git tag -a v0.0.0 -m "Initial"` before rerunning.
 
 ## Key Commands
-- Stream to stdout: `uv run python -m arch_diff_miner mine --repo $REPO_PATH --adl-file adl.yaml --code-exts .py .rs`
-- Write JSONL to disk: `uv run python -m arch_diff_miner mine --repo $REPO_PATH --adl-file adl.yaml --output training_dataset.jsonl`
+- Stream to stdout: `uv run python -m arch_diff_miner mine --repo $REPO_PATH --adl-file adl.yaml --code-exts .py .rs --context-days 90`
+- Write JSONL to disk: `uv run python -m arch_diff_miner mine --repo $REPO_PATH --adl-file adl.yaml --context-days 90 --output training_dataset.jsonl`
 - Run tests: `uv run pytest`
 
 ## Output Format (JSONL)
