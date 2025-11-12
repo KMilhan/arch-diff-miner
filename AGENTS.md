@@ -14,7 +14,7 @@ Keep helper scripts beside the miner so paths stay relative; place any future te
 - Capture upstream/downstream dependencies in each issue description when they are known, and link related work with sub-issues so reviewers can see sequencing at a glance.
 
 ## Build, Test, and Development Commands
-- Run everything through `uv` to stay on the locked Python 3.14 toolchain; skip ad-hoc `pip` or system `python` invocations.
+- Run everything through `uv` to stay on the locked Python 3.14 freethreaded (no-GIL) toolchain; skip ad-hoc `pip` or system `python` invocations, and install the interpreter with `uv python install 3.14+freethreaded` when needed.
 - `uv sync` – installs the locked environment; prefer this over bare `pip` so everyone targets Python 3.14.
 - `uv run python main.py` – ensures the entry point and logging stack still execute after edits.
 - `uv run python mine_adl_diffs.py` – mines diffs using the `REPO_PATH` pointing at your local ADL source repo and refreshes `training_dataset.json`.
