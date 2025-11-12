@@ -13,6 +13,7 @@ from .cli import (
     mine,
     mine_repository,
 )
+from .context import collect_context_stats
 
 __all__ = [
     "DEFAULT_ADL_FILE",
@@ -22,6 +23,7 @@ __all__ = [
     "MineConfig",
     "TrainingSample",
     "app",
+    "collect_context_stats",
     "main",
     "mine",
     "mine_repository",

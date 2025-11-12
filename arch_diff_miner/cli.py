@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - fallback for older pygit2
 import typer
 
 from .jsonl_writer import write_jsonl_dataset
+from .context import collect_context_stats
 
 
 class TrainingSample(TypedDict):
@@ -40,6 +41,7 @@ class TrainingSample(TypedDict):
     intent_message: str
     adl_diff: Dict[str, Any]
     code_diffs: List[Dict[str, Any]]
+    context_stats: Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -273,6 +275,13 @@ def _format_timestamp(signature: pygit2.Signature) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _signature_datetime(signature: pygit2.Signature) -> datetime:
+    """Return a timezone-aware datetime for additional computations."""
+
+    tz = timezone(timedelta(minutes=signature.offset))
+    return datetime.fromtimestamp(signature.time, tz).astimezone(timezone.utc)
+
+
 class _AdlDiffResult(TypedDict, total=False):
     patch_text: str
     status: str
@@ -489,6 +498,48 @@ def mine_repository(
 
         adl_commit_count += 1
 
+        code_paths = [diff_entry["path"] for diff_entry in code_diffs_x1]
+        unique_code_paths = list(dict.fromkeys(code_paths))
+        analysis_until = _signature_datetime(parent_commit.committer)
+        analysis_since = analysis_until - timedelta(days=config.context_days)
+        try:
+            per_file_stats, aggregate_stats = collect_context_stats(
+                repo=repo,
+                parent_commit=parent_commit,
+                files=unique_code_paths,
+                since_dt=analysis_since,
+                until_dt=analysis_until,
+            )
+        except Exception as error:  # pragma: no cover - defensive
+            logger.warning(
+                "Context mining failed for commit %s: %s", commit_id, error
+            )
+            per_file_stats = {
+                path: {
+                    "churn_count": 0,
+                    "unique_authors": 0,
+                    "last_modified_days_ago": 0.0,
+                    "top_authors": [],
+                }
+                for path in unique_code_paths
+            }
+            aggregate_stats = {
+                "total_commits": 0,
+                "total_unique_authors": 0,
+                "most_recent_change_days_ago": 0.0,
+            }
+        context_stats = {
+            "analysis_parent_hash": parent_id,
+            "analysis_timespan_days": config.context_days,
+            "analysis_window": {
+                "since": analysis_since.isoformat().replace("+00:00", "Z"),
+                "until": analysis_until.isoformat().replace("+00:00", "Z"),
+            },
+            "files_analyzed": unique_code_paths,
+            "per_file_stats": per_file_stats,
+            "aggregate_stats": aggregate_stats,
+        }
+
         intent_x2 = (target_commit.message or "").strip()
 
         author = target_commit.author
@@ -513,6 +564,7 @@ def mine_repository(
                 "stats": adl_result.get("stats", {"additions": 0, "deletions": 0}),
             },
             "code_diffs": code_diffs_x1,
+            "context_stats": context_stats,
         }
         training_data.append(data_pair)
         logger.info(
