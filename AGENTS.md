@@ -11,6 +11,7 @@ Keep helper scripts beside the miner so paths stay relative; place any future te
 - Manage every change through GitHub Issues by using the `gh` CLI so the task history stays visible.
 - Limit issue activity to `https://github.com/KMilhan/arch-diff-miner`; avoid opening or editing issues outside this repo for routine work.
 - Reference the active issue number in your notes and close or update it with `gh issue comment|close` immediately after pushing the corresponding commit.
+- Capture upstream/downstream dependencies in each issue description when they are known, and link related work with sub-issues so reviewers can see sequencing at a glance.
 
 ## Build, Test, and Development Commands
 - Run everything through `uv` to stay on the locked Python 3.14 toolchain; skip ad-hoc `pip` or system `python` invocations.
