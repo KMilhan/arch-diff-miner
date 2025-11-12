@@ -306,13 +306,14 @@ def _collect_commit_diffs(
             current_tree,
             context_lines=3,
             interhunk_lines=1,
+            flags=pygit2.GIT_DIFF_INCLUDE_TYPECHANGE,
         )
     except pygit2.GitError as error:
         logger.error("Could not compute diff for commit: %s", error)
         return {"touched": False}, []
 
     try:
-        diff.find_similar()
+        diff.find_similar(rename_threshold=60)
     except AttributeError:  # pragma: no cover - older pygit2
         pass
 
