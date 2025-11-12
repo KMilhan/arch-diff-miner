@@ -13,6 +13,7 @@ Keep helper scripts beside the miner so paths stay relative; place any future te
 - Reference the active issue number in your notes and close or update it with `gh issue comment|close` immediately after pushing the corresponding commit.
 
 ## Build, Test, and Development Commands
+- Run everything through `uv` to stay on the locked Python 3.14 toolchain; skip ad-hoc `pip` or system `python` invocations.
 - `uv sync` – installs the locked environment; prefer this over bare `pip` so everyone targets Python 3.14.
 - `uv run python main.py` – ensures the entry point and logging stack still execute after edits.
 - `uv run python mine_adl_diffs.py` – mines diffs using the `REPO_PATH` pointing at your local ADL source repo and refreshes `training_dataset.json`.
@@ -20,14 +21,17 @@ Keep helper scripts beside the miner so paths stay relative; place any future te
 Set `REPO_PATH` and `ADL_FILE_PATH` via env vars when scripting (`REPO_PATH=~/code/spam uv run python mine_adl_diffs.py`).
 
 ## Coding Style & Naming Conventions
-Follow PEP 8 with 4-space indentation, type hints, and module-level constants in `UPPER_SNAKE_CASE` (see `REPO_PATH`). Favor pure functions that accept explicit paths, and always wrap user messages with `logging` instead of `print` inside the miner. Keep docstrings in Google-style sentences describing inputs/outputs.
+- Treat PEP 8/PEP 257 guidance as mandatory: 4-space indentation, type hints, and `UPPER_SNAKE_CASE` module-level constants (see `REPO_PATH`).
+- Favor pure functions that accept explicit paths, and always wrap user messages with `logging` instead of `print` inside the miner.
+- Keep docstrings in Google-style sentences describing inputs/outputs.
 
 ## Testing Guidelines
 Create tests under `tests/` using `pytest`, naming files `test_*.py` and functions `test_<behavior>()`. When fixtures need repositories, mock GitPython objects rather than cloning live repos. Before committing, run `uv run pytest` and manually inspect the first tuple in `training_dataset.json` to confirm intents/diffs align with expectations.
 
 ## Commit & Pull Request Guidelines
-- Write colon-style emoji commit messages (e.g., `:memo:`) without any accompanying category prefixes, and `git push` right after committing.
-- Keep commits focused (script edit + dataset sample at most). Because commits lack closing keywords, finish the related GitHub Issue by commenting with the commit link or by running `gh issue close` once the push succeeds.
+- Keep each commit atomic; pair script edits with dataset snapshots only when they cannot be separated.
+- Format commit messages as a colon-style emoji followed by an imperative title (e.g., `:memo: Document workflow`), then `git push` immediately.
+- Because commits lack closing keywords, finish the related GitHub Issue by commenting with the commit link or by running `gh issue close` once the push succeeds.
 - Pull requests should include: purpose summary, reproduction steps (`uv run ...`), sample diff tuple output, and mention of any external repo snapshots; attach screenshots only if you introduce UI/diagram artifacts.
 
 ## Security & Configuration Tips
