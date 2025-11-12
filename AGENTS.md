@@ -27,7 +27,7 @@ Set `REPO_PATH` and `ADL_FILE_PATH` via env vars when scripting (`REPO_PATH=~/co
 - Keep docstrings in Google-style sentences describing inputs/outputs.
 
 ## Testing Guidelines
-Create tests under `tests/` using `pytest`, naming files `test_*.py` and functions `test_<behavior>()`. When fixtures need repositories, mock GitPython objects rather than cloning live repos. Before committing, run `uv run pytest` and manually inspect the first tuple in `training_dataset.json` to confirm intents/diffs align with expectations.
+Create tests under `tests/` using `pytest`, naming files `test_*.py` and functions `test_<behavior>()`. When fixtures need repositories, mock pygit2 objects rather than cloning live repos. Before committing, run `uv run pytest` and manually inspect the first tuple in `training_dataset.json` to confirm intents/diffs align with expectations.
 
 ## Commit & Pull Request Guidelines
 - Keep each commit atomic; pair script edits with dataset snapshots only when they cannot be separated.
