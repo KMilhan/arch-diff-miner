@@ -11,3 +11,9 @@ dependencies = [
 
 [project.scripts]
 arch-diff-miner = "arch_diff_miner.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+    "pytest-cov>=7.0.0",
+]
